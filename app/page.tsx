@@ -2,61 +2,92 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type JobStatus = "actif" | "archive";
-
-type Job = {
+type UnitJob = {
   id: string;
-  unitNumber: string;
-  workToDo: string;
-  comments: string;
-  date: string;
-  status: JobStatus;
+  text: string;
+  done: boolean;
 };
 
-type HistoryByUnit = Record<string, Job[]>;
+type UnitCard = {
+  id: string;
+  unit: string;
+  jobs: UnitJob[];
+  date: string;
+  comments: string;
+  completedAt?: string;
+};
 
 type FormState = {
-  unitNumber: string;
-  workToDo: string;
-  comments: string;
+  unit: string;
+  jobsText: string;
   date: string;
+  comments: string;
 };
 
-const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-jobs";
-const HISTORY_STORAGE_KEY = "truck-job-tracker:history-by-unit";
+const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-units";
+const HISTORY_STORAGE_KEY = "truck-job-tracker:history-units";
 
 const defaultDate = () => new Date().toISOString().slice(0, 10);
+
 const emptyForm = (): FormState => ({
-  unitNumber: "",
-  workToDo: "",
-  comments: "",
+  unit: "",
+  jobsText: "",
   date: defaultDate(),
+  comments: "",
 });
 
-function normalizeJob(raw: Partial<Job>): Job | null {
-  const id = typeof raw.id === "string" ? raw.id : "";
-  const unitNumber = typeof raw.unitNumber === "string" ? raw.unitNumber : "";
-  const workToDo = typeof raw.workToDo === "string" ? raw.workToDo : "";
-  const date = typeof raw.date === "string" ? raw.date : "";
+function parseJobs(textareaValue: string): UnitJob[] {
+  return textareaValue
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => ({
+      id: crypto.randomUUID(),
+      text: line,
+      done: false,
+    }));
+}
 
-  if (!id || !unitNumber || !workToDo || !date) return null;
+function normalizeUnitCard(raw: Partial<UnitCard>): UnitCard | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const id = typeof raw.id === "string" ? raw.id : "";
+  const unit = typeof raw.unit === "string" ? raw.unit : "";
+  const date = typeof raw.date === "string" ? raw.date : "";
+  if (!id || !unit || !date) return null;
+
+  const jobs: UnitJob[] = Array.isArray(raw.jobs)
+    ? raw.jobs
+        .map((j) => {
+          if (!j || typeof j !== "object") return null;
+          const job = j as Partial<UnitJob>;
+          if (typeof job.id !== "string" || typeof job.text !== "string") return null;
+          return {
+            id: job.id,
+            text: job.text,
+            done: job.done === true,
+          };
+        })
+        .filter((job): job is UnitJob => Boolean(job))
+    : [];
+
+  if (jobs.length === 0) return null;
 
   return {
     id,
-    unitNumber,
-    workToDo,
-    comments: typeof raw.comments === "string" ? raw.comments : "",
+    unit,
+    jobs,
     date,
-    status: raw.status === "archive" ? "archive" : "actif",
+    comments: typeof raw.comments === "string" ? raw.comments : "",
+    completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
   };
 }
 
 export default function Home() {
   const [form, setForm] = useState<FormState>(emptyForm());
-  const [editingJobId, setEditingJobId] = useState<string | null>(null);
-  const [activeJobs, setActiveJobs] = useState<Job[]>([]);
-  const [historyByUnit, setHistoryByUnit] = useState<HistoryByUnit>({});
-  const [selectedUnitHistory, setSelectedUnitHistory] = useState<string>("");
+  const [activeUnits, setActiveUnits] = useState<UnitCard[]>([]);
+  const [historyUnits, setHistoryUnits] = useState<UnitCard[]>([]);
+  const [selectedUnitHistory, setSelectedUnitHistory] = useState("");
 
   useEffect(() => {
     try {
@@ -64,142 +95,112 @@ export default function Home() {
       const savedHistory = localStorage.getItem(HISTORY_STORAGE_KEY);
 
       if (savedActive) {
-        const parsedActive = JSON.parse(savedActive) as Partial<Job>[];
-        if (Array.isArray(parsedActive)) {
-          setActiveJobs(parsedActive.map(normalizeJob).filter((job): job is Job => Boolean(job)).map((job) => ({ ...job, status: "actif" })));
+        const parsed = JSON.parse(savedActive) as Partial<UnitCard>[];
+        if (Array.isArray(parsed)) {
+          setActiveUnits(parsed.map(normalizeUnitCard).filter((u): u is UnitCard => Boolean(u)));
         }
       }
 
       if (savedHistory) {
-        const parsedHistory = JSON.parse(savedHistory) as Record<string, Partial<Job>[]>;
-        if (parsedHistory && typeof parsedHistory === "object") {
-          const nextHistory: HistoryByUnit = {};
-          Object.entries(parsedHistory).forEach(([unit, jobs]) => {
-            if (!Array.isArray(jobs)) return;
-            nextHistory[unit] = jobs
-              .map(normalizeJob)
-              .filter((job): job is Job => Boolean(job))
-              .map((job) => ({ ...job, status: "archive" }));
-          });
-          setHistoryByUnit(nextHistory);
+        const parsed = JSON.parse(savedHistory) as Partial<UnitCard>[];
+        if (Array.isArray(parsed)) {
+          setHistoryUnits(parsed.map(normalizeUnitCard).filter((u): u is UnitCard => Boolean(u)));
         }
       }
     } catch {
-      setActiveJobs([]);
-      setHistoryByUnit({});
+      setActiveUnits([]);
+      setHistoryUnits([]);
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(ACTIVE_STORAGE_KEY, JSON.stringify(activeJobs));
-  }, [activeJobs]);
+    localStorage.setItem(ACTIVE_STORAGE_KEY, JSON.stringify(activeUnits));
+  }, [activeUnits]);
 
   useEffect(() => {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyByUnit));
-  }, [historyByUnit]);
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyUnits));
+  }, [historyUnits]);
 
-  function startEditingJob(jobId: string) {
-    const jobToEdit = activeJobs.find((job) => job.id === jobId);
-    if (!jobToEdit) return;
-
-    setEditingJobId(jobToEdit.id);
-    setForm({
-      unitNumber: jobToEdit.unitNumber,
-      workToDo: jobToEdit.workToDo,
-      comments: jobToEdit.comments,
-      date: jobToEdit.date,
-    });
-  }
-
-  function cancelEditing() {
-    setEditingJobId(null);
-    setForm(emptyForm());
-  }
-
-  function upsertJob(e: FormEvent<HTMLFormElement>) {
+  function addUnitCard(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    const nextJobData: FormState = {
-      unitNumber: form.unitNumber.trim(),
-      workToDo: form.workToDo.trim(),
-      comments: form.comments.trim(),
-      date: form.date,
-    };
+    const unit = form.unit.trim();
+    const comments = form.comments.trim();
+    const jobs = parseJobs(form.jobsText);
 
-    if (!nextJobData.unitNumber || !nextJobData.workToDo || !nextJobData.date) return;
+    if (!unit || !form.date || jobs.length === 0) return;
 
-    if (editingJobId) {
-      setActiveJobs((current) =>
-        current.map((job) =>
-          job.id === editingJobId
-            ? {
-                ...job,
-                ...nextJobData,
-              }
-            : job,
-        ),
-      );
-      setEditingJobId(null);
-      setForm(emptyForm());
-      return;
-    }
-
-    const newJob: Job = {
+    const card: UnitCard = {
       id: crypto.randomUUID(),
-      ...nextJobData,
-      status: "actif",
+      unit,
+      jobs,
+      date: form.date,
+      comments,
     };
 
-    setActiveJobs((current) => [newJob, ...current]);
+    setActiveUnits((current) => [card, ...current]);
     setForm(emptyForm());
   }
 
-  function markJobAsDone(jobId: string) {
-    if (editingJobId === jobId) {
-      cancelEditing();
-    }
+  function toggleJobDone(unitId: string, jobId: string) {
+    setActiveUnits((currentActive) => {
+      let archivedCard: UnitCard | null = null;
 
-    setActiveJobs((currentActive) => {
-      const job = currentActive.find((j) => j.id === jobId);
-      if (!job) return currentActive;
+      const nextActive = currentActive
+        .map((card) => {
+          if (card.id !== unitId) return card;
 
-      const archivedJob: Job = { ...job, status: "archive" };
+          const updatedJobs = card.jobs.map((job) => (job.id === jobId ? { ...job, done: true } : job));
+          const allDone = updatedJobs.every((job) => job.done);
 
-      setHistoryByUnit((currentHistory) => {
-        const unit = archivedJob.unitNumber;
-        const existing = currentHistory[unit] ?? [];
-        return {
-          ...currentHistory,
-          [unit]: [archivedJob, ...existing],
-        };
-      });
+          if (allDone) {
+            archivedCard = {
+              ...card,
+              jobs: updatedJobs,
+              completedAt: new Date().toISOString(),
+            };
+            return null;
+          }
 
-      return currentActive.filter((j) => j.id !== jobId);
+          return {
+            ...card,
+            jobs: updatedJobs,
+          };
+        })
+        .filter((card): card is UnitCard => Boolean(card));
+
+      if (archivedCard) {
+        setHistoryUnits((currentHistory) => [archivedCard as UnitCard, ...currentHistory]);
+      }
+
+      return nextActive;
     });
   }
 
-  function deleteActiveJob(jobId: string) {
-    if (editingJobId === jobId) {
-      cancelEditing();
-    }
+  const activeSorted = useMemo(() => [...activeUnits].sort((a, b) => b.date.localeCompare(a.date)), [activeUnits]);
 
-    setActiveJobs((current) => current.filter((j) => j.id !== jobId));
-  }
+  const historyUnitNumbers = useMemo(
+    () => Array.from(new Set(historyUnits.map((card) => card.unit))).sort((a, b) => a.localeCompare(b, "fr")),
+    [historyUnits],
+  );
 
-  const sortedActiveJobs = useMemo(() => [...activeJobs].sort((a, b) => b.date.localeCompare(a.date)), [activeJobs]);
-  const sortedUnits = useMemo(() => Object.keys(historyByUnit).sort((a, b) => a.localeCompare(b, "fr")), [historyByUnit]);
+  const visibleHistory = useMemo(() => {
+    const sorted = [...historyUnits].sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""));
+    if (!selectedUnitHistory) return sorted;
+    return sorted.filter((card) => card.unit === selectedUnitHistory);
+  }, [historyUnits, selectedUnitHistory]);
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-6xl bg-slate-50 p-4 text-slate-900 md:p-6">
       <h1 className="mb-6 text-3xl font-bold">Truck Job Tracker</h1>
 
       <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-        <h2 className="mb-4 text-xl font-semibold">{editingJobId ? "Modifier un travail actif" : "Ajouter un travail"}</h2>
-        <form onSubmit={upsertJob} className="grid gap-3 sm:grid-cols-2">
+        <h2 className="mb-4 text-xl font-semibold">Ajouter une unité</h2>
+        <form onSubmit={addUnitCard} className="grid gap-3 sm:grid-cols-2">
           <input
             type="text"
-            value={form.unitNumber}
-            onChange={(e) => setForm((c) => ({ ...c, unitNumber: e.target.value }))}
+            value={form.unit}
+            onChange={(e) => setForm((c) => ({ ...c, unit: e.target.value }))}
             placeholder="Numéro d’unité (ex: 1111)"
             className="rounded-lg border border-slate-300 p-2"
             required
@@ -212,9 +213,9 @@ export default function Home() {
             required
           />
           <textarea
-            value={form.workToDo}
-            onChange={(e) => setForm((c) => ({ ...c, workToDo: e.target.value }))}
-            placeholder={'Travail à faire\n- Changer huile\n- Vérifier freins\n- Inspection générale'}
+            value={form.jobsText}
+            onChange={(e) => setForm((c) => ({ ...c, jobsText: e.target.value }))}
+            placeholder={"Travaux à faire (une ligne = un travail)\nChanger huile\nVérifier freins\nInspection générale"}
             className="min-h-28 rounded-lg border border-slate-300 p-2 leading-relaxed sm:col-span-2"
             rows={5}
             required
@@ -222,136 +223,96 @@ export default function Home() {
           <textarea
             value={form.comments}
             onChange={(e) => setForm((c) => ({ ...c, comments: e.target.value }))}
-            placeholder="Commentaires (facultatif)"
+            placeholder="Commentaires"
             className="min-h-24 rounded-lg border border-slate-300 p-2 leading-relaxed sm:col-span-2"
-            rows={5}
+            rows={4}
           />
-          <div className="flex flex-wrap gap-2 sm:col-span-2">
-            <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white">
-              {editingJobId ? "Enregistrer les modifications" : "Ajouter"}
+          <div className="sm:col-span-2">
+            <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white transition hover:bg-blue-700">
+              Ajouter
             </button>
-            {editingJobId && (
-              <button
-                type="button"
-                onClick={cancelEditing}
-                className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700"
-              >
-                Annuler la modification
-              </button>
-            )}
           </div>
         </form>
       </section>
 
       <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-        <h2 className="mb-4 text-xl font-semibold">Travaux actifs</h2>
-        {sortedActiveJobs.length === 0 ? (
-          <p className="text-slate-600">Aucun travail actif.</p>
+        <h2 className="mb-4 text-xl font-semibold">Unités actives</h2>
+        {activeSorted.length === 0 ? (
+          <p className="text-slate-600">Aucune unité active.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
-              <thead>
-                <tr className="border-b border-slate-200">
-                  <th className="p-2">Numéro d’unité</th>
-                  <th className="p-2">Travail</th>
-                  <th className="p-2">Date</th>
-                  <th className="p-2">Commentaires</th>
-                  <th className="p-2">Statut</th>
-                  <th className="p-2">Modifier</th>
-                  <th className="p-2">Fait</th>
-                  <th className="p-2">Supprimer</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedActiveJobs.map((job) => (
-                  <tr key={job.id} className="border-b border-slate-100 align-top">
-                    <td className="p-2 font-medium">{job.unitNumber}</td>
-                    <td className="whitespace-pre-line p-2 leading-relaxed">{job.workToDo}</td>
-                    <td className="p-2">{job.date}</td>
-                    <td className="whitespace-pre-line p-2 leading-relaxed">{job.comments || "—"}</td>
-                    <td className="p-2">
-                      <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">Actif</span>
-                    </td>
-                    <td className="p-2">
-                      <button
-                        type="button"
-                        onClick={() => startEditingJob(job.id)}
-                        className="rounded-md bg-amber-500 px-3 py-1 text-sm font-semibold text-white"
-                      >
-                        Modifier
-                      </button>
-                    </td>
-                    <td className="p-2">
-                      <input type="checkbox" aria-label={`Marquer ${job.workToDo} comme fait`} onChange={() => markJobAsDone(job.id)} />
-                    </td>
-                    <td className="p-2">
-                      <button
-                        type="button"
-                        onClick={() => deleteActiveJob(job.id)}
-                        className="rounded-md bg-red-600 px-3 py-1 text-sm font-semibold text-white"
-                      >
-                        Supprimer
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-4">
+            {activeSorted.map((card) => {
+              const total = card.jobs.length;
+              const done = card.jobs.filter((j) => j.done).length;
+              const remainingJobs = card.jobs.filter((j) => !j.done);
+
+              return (
+                <article key={card.id} className="rounded-xl border border-slate-200 p-4 shadow-sm transition-all duration-200 hover:shadow">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-lg font-semibold">Unité {card.unit}</h3>
+                    <span className="rounded-full bg-blue-100 px-3 py-1 text-xs font-semibold text-blue-700">{done}/{total} travaux complétés</span>
+                  </div>
+                  <p className="mb-3 text-sm text-slate-600">Date: {card.date}</p>
+                  {card.comments && <p className="mb-4 whitespace-pre-line text-sm text-slate-700">Commentaires: {card.comments}</p>}
+
+                  <ul className="space-y-3">
+                    {remainingJobs.map((job) => (
+                      <li key={job.id} className="flex items-start gap-3 rounded-lg border border-slate-100 bg-slate-50 p-3">
+                        <input
+                          type="checkbox"
+                          aria-label={`Marquer ${job.text} comme complété`}
+                          checked={job.done}
+                          onChange={() => toggleJobDone(card.id, job.id)}
+                          className="mt-1 h-4 w-4"
+                        />
+                        <span className="leading-relaxed">{job.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              );
+            })}
           </div>
         )}
       </section>
 
       <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <h2 className="text-xl font-semibold">Historique par unité (verrouillé)</h2>
+          <h2 className="text-xl font-semibold">Historique verrouillé</h2>
           <select
             value={selectedUnitHistory}
             onChange={(e) => setSelectedUnitHistory(e.target.value)}
             className="rounded-lg border border-slate-300 p-2"
           >
-            <option value="">Voir historique d’une unité</option>
-            {sortedUnits.map((unit) => (
+            <option value="">Voir tout l’historique</option>
+            {historyUnitNumbers.map((unit) => (
               <option key={unit} value={unit}>
-                Unité {unit}
+                Voir historique d’une unité: {unit}
               </option>
             ))}
           </select>
         </div>
 
-        {sortedUnits.length === 0 ? (
-          <p className="text-slate-600">Aucun historique pour le moment.</p>
+        {visibleHistory.length === 0 ? (
+          <p className="text-slate-600">Aucun historique.</p>
         ) : (
           <div className="space-y-4">
-            {(selectedUnitHistory ? [selectedUnitHistory] : sortedUnits).map((unit) => (
-              <div key={unit} className="rounded-lg border border-slate-200 p-3">
-                <h3 className="mb-3 font-semibold">Unité {unit}</h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-left">
-                    <thead>
-                      <tr className="border-b border-slate-200">
-                        <th className="p-2">Numéro d’unité</th>
-                        <th className="p-2">Travail</th>
-                        <th className="p-2">Date</th>
-                        <th className="p-2">Commentaires</th>
-                        <th className="p-2">Statut</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(historyByUnit[unit] ?? []).map((job) => (
-                        <tr key={job.id} className="border-b border-slate-100 align-top">
-                          <td className="p-2 font-medium">{job.unitNumber}</td>
-                          <td className="whitespace-pre-line p-2 leading-relaxed">{job.workToDo}</td>
-                          <td className="p-2">{job.date}</td>
-                          <td className="whitespace-pre-line p-2 leading-relaxed">{job.comments || "—"}</td>
-                          <td className="p-2">
-                            <span className="inline-flex rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Archivé</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            {visibleHistory.map((card) => (
+              <article key={card.id} className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                <h3 className="mb-2 font-semibold">Unité {card.unit}</h3>
+                <p className="mb-2 text-sm text-slate-700">Date de création: {card.date}</p>
+                {card.completedAt && (
+                  <p className="mb-3 text-sm text-slate-700">Complété le: {new Date(card.completedAt).toLocaleString("fr-CA")}</p>
+                )}
+                {card.comments && <p className="mb-3 whitespace-pre-line text-sm">Commentaires: {card.comments}</p>}
+                <ul className="space-y-2">
+                  {card.jobs.map((job) => (
+                    <li key={job.id} className="rounded border border-emerald-200 bg-white p-2 text-sm">
+                      ✅ {job.text}
+                    </li>
+                  ))}
+                </ul>
+              </article>
             ))}
           </div>
         )}
