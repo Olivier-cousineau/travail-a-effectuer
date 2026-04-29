@@ -1,28 +1,59 @@
-# Municipal Truck Job Tracker
+# Municipal Truck Job Tracker (Google Sheets)
 
-Next.js + Tailwind + Supabase app for municipal truck job tracking from notebook photos.
+Application mobile-friendly en Next.js + React + Tailwind pour suivre les jobs des camions municipaux à partir de photos de cahier, avec stockage dans Google Sheets.
 
 ## Setup
 
-1. Install dependencies:
+1. Installer les dépendances:
    ```bash
    npm install
    ```
-2. Copy env vars:
+2. Copier les variables d'environnement:
    ```bash
    cp .env.example .env.local
    ```
-3. Fill Supabase keys in `.env.local`.
-4. Run SQL from `supabase.sql` in Supabase SQL editor.
-5. Start app:
+3. Ajouter l'URL du Web App Google Apps Script dans `.env.local`:
+   ```env
+   NEXT_PUBLIC_GOOGLE_SHEETS_API_URL=...
+   ```
+4. Lancer l'app:
    ```bash
    npm run dev
    ```
 
-## Features
-- Mobile-friendly form to take/upload notebook photos.
-- Multiple job entries linked to uploaded photo.
-- Auto-created date (`created_at`) in database.
-- Dashboard filtering by truck, status, date.
-- Mark job as done button.
-- CSV export (Excel-compatible).
+## Structure Google Sheets
+Créer une feuille avec les colonnes:
+- `id`
+- `created_at`
+- `truck_number`
+- `job_description`
+- `status`
+- `completion_date`
+- `employee_name`
+- `comments`
+- `photo_data_url`
+
+## Google Apps Script (exemple)
+Publier en tant que Web App (accès adapté à votre besoin) et implémenter les actions:
+- `listJobs`
+- `createJob`
+- `markDone`
+
+Le front envoie des requêtes POST JSON:
+```json
+{ "action": "listJobs" }
+```
+```json
+{ "action": "createJob", "truck_number": "12", "job_description": "..." }
+```
+```json
+{ "action": "markDone", "id": "...", "completion_date": "2026-04-29" }
+```
+
+## Fonctionnalités
+- Capture / upload de photo de cahier.
+- Ajout de plusieurs jobs liés à une photo.
+- Date de création automatique côté backend Google Apps Script.
+- Dashboard avec filtres par camion, statut et date.
+- Bouton “Mark done”.
+- Export CSV (compatible Excel).
