@@ -26,6 +26,12 @@ const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-jobs";
 const HISTORY_STORAGE_KEY = "truck-job-tracker:history-by-unit";
 
 const defaultDate = () => new Date().toISOString().slice(0, 10);
+const emptyForm = (): FormState => ({
+  unitNumber: "",
+  workToDo: "",
+  comments: "",
+  date: defaultDate(),
+});
 
 function normalizeJob(raw: Partial<Job>): Job | null {
   const id = typeof raw.id === "string" ? raw.id : "";
@@ -46,12 +52,8 @@ function normalizeJob(raw: Partial<Job>): Job | null {
 }
 
 export default function Home() {
-  const [form, setForm] = useState<FormState>({
-    unitNumber: "",
-    workToDo: "",
-    comments: "",
-    date: defaultDate(),
-  });
+  const [form, setForm] = useState<FormState>(emptyForm());
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [activeJobs, setActiveJobs] = useState<Job[]>([]);
   const [historyByUnit, setHistoryByUnit] = useState<HistoryByUnit>({});
   const [selectedUnitHistory, setSelectedUnitHistory] = useState<string>("");
@@ -96,25 +98,67 @@ export default function Home() {
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyByUnit));
   }, [historyByUnit]);
 
-  function addJob(e: FormEvent<HTMLFormElement>) {
+  function startEditingJob(jobId: string) {
+    const jobToEdit = activeJobs.find((job) => job.id === jobId);
+    if (!jobToEdit) return;
+
+    setEditingJobId(jobToEdit.id);
+    setForm({
+      unitNumber: jobToEdit.unitNumber,
+      workToDo: jobToEdit.workToDo,
+      comments: jobToEdit.comments,
+      date: jobToEdit.date,
+    });
+  }
+
+  function cancelEditing() {
+    setEditingJobId(null);
+    setForm(emptyForm());
+  }
+
+  function upsertJob(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    const newJob: Job = {
-      id: crypto.randomUUID(),
+    const nextJobData: FormState = {
       unitNumber: form.unitNumber.trim(),
       workToDo: form.workToDo.trim(),
       comments: form.comments.trim(),
       date: form.date,
+    };
+
+    if (!nextJobData.unitNumber || !nextJobData.workToDo || !nextJobData.date) return;
+
+    if (editingJobId) {
+      setActiveJobs((current) =>
+        current.map((job) =>
+          job.id === editingJobId
+            ? {
+                ...job,
+                ...nextJobData,
+              }
+            : job,
+        ),
+      );
+      setEditingJobId(null);
+      setForm(emptyForm());
+      return;
+    }
+
+    const newJob: Job = {
+      id: crypto.randomUUID(),
+      ...nextJobData,
       status: "actif",
     };
 
-    if (!newJob.unitNumber || !newJob.workToDo || !newJob.date) return;
-
     setActiveJobs((current) => [newJob, ...current]);
-    setForm({ unitNumber: "", workToDo: "", comments: "", date: defaultDate() });
+    setForm(emptyForm());
   }
 
   function markJobAsDone(jobId: string) {
+    if (editingJobId === jobId) {
+      cancelEditing();
+    }
+
     setActiveJobs((currentActive) => {
       const job = currentActive.find((j) => j.id === jobId);
       if (!job) return currentActive;
@@ -135,6 +179,10 @@ export default function Home() {
   }
 
   function deleteActiveJob(jobId: string) {
+    if (editingJobId === jobId) {
+      cancelEditing();
+    }
+
     setActiveJobs((current) => current.filter((j) => j.id !== jobId));
   }
 
@@ -146,8 +194,8 @@ export default function Home() {
       <h1 className="mb-6 text-3xl font-bold">Truck Job Tracker</h1>
 
       <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6">
-        <h2 className="mb-4 text-xl font-semibold">Ajouter un travail</h2>
-        <form onSubmit={addJob} className="grid gap-3 sm:grid-cols-2">
+        <h2 className="mb-4 text-xl font-semibold">{editingJobId ? "Modifier un travail actif" : "Ajouter un travail"}</h2>
+        <form onSubmit={upsertJob} className="grid gap-3 sm:grid-cols-2">
           <input
             type="text"
             value={form.unitNumber}
@@ -178,9 +226,20 @@ export default function Home() {
             className="min-h-24 rounded-lg border border-slate-300 p-2 leading-relaxed sm:col-span-2"
             rows={5}
           />
-          <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white sm:col-span-2">
-            Ajouter
-          </button>
+          <div className="flex flex-wrap gap-2 sm:col-span-2">
+            <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white">
+              {editingJobId ? "Enregistrer les modifications" : "Ajouter"}
+            </button>
+            {editingJobId && (
+              <button
+                type="button"
+                onClick={cancelEditing}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-semibold text-slate-700"
+              >
+                Annuler la modification
+              </button>
+            )}
+          </div>
         </form>
       </section>
 
@@ -198,6 +257,7 @@ export default function Home() {
                   <th className="p-2">Date</th>
                   <th className="p-2">Commentaires</th>
                   <th className="p-2">Statut</th>
+                  <th className="p-2">Modifier</th>
                   <th className="p-2">Fait</th>
                   <th className="p-2">Supprimer</th>
                 </tr>
@@ -211,6 +271,15 @@ export default function Home() {
                     <td className="whitespace-pre-line p-2 leading-relaxed">{job.comments || "—"}</td>
                     <td className="p-2">
                       <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">Actif</span>
+                    </td>
+                    <td className="p-2">
+                      <button
+                        type="button"
+                        onClick={() => startEditingJob(job.id)}
+                        className="rounded-md bg-amber-500 px-3 py-1 text-sm font-semibold text-white"
+                      >
+                        Modifier
+                      </button>
                     </td>
                     <td className="p-2">
                       <input type="checkbox" aria-label={`Marquer ${job.workToDo} comme fait`} onChange={() => markJobAsDone(job.id)} />
