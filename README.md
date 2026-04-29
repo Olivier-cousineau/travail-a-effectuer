@@ -57,3 +57,11 @@ Le front envoie des requêtes POST JSON:
 - Dashboard avec filtres par camion, statut et date.
 - Bouton “Mark done”.
 - Export CSV (compatible Excel).
+
+
+## Backend Google Apps Script prêt à l'emploi
+Le fichier `apps-script/Code.gs` contient une implémentation complète de `listJobs`, `createJob` et `markDone`.
+- Ouvrir Google Sheets > Extensions > Apps Script
+- Coller le contenu de `apps-script/Code.gs`
+- Déployer en Web App (accès selon votre besoin)
+- Copier l'URL du Web App dans `NEXT_PUBLIC_GOOGLE_SHEETS_API_URL`
