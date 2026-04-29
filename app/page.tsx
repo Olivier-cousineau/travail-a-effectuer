@@ -26,6 +26,8 @@ type FormState = {
 
 const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-units";
 const HISTORY_STORAGE_KEY = "truck-job-tracker:history-units";
+const LEGACY_ACTIVE_STORAGE_KEY = "truck-job-tracker:active-jobs";
+const LEGACY_HISTORY_STORAGE_KEY = "truck-job-tracker:history-by-unit";
 
 const defaultDate = () => new Date().toISOString().slice(0, 10);
 
@@ -83,6 +85,48 @@ function normalizeUnitCard(raw: Partial<UnitCard>): UnitCard | null {
   };
 }
 
+type LegacyJob = {
+  id: string;
+  unitNumber: string;
+  workToDo: string;
+  comments?: string;
+  date: string;
+  status?: "actif" | "archive";
+};
+
+function normalizeLegacyJob(raw: Partial<LegacyJob>): LegacyJob | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.id !== "string" || typeof raw.unitNumber !== "string" || typeof raw.workToDo !== "string" || typeof raw.date !== "string") {
+    return null;
+  }
+
+  return {
+    id: raw.id,
+    unitNumber: raw.unitNumber,
+    workToDo: raw.workToDo,
+    comments: typeof raw.comments === "string" ? raw.comments : "",
+    date: raw.date,
+    status: raw.status === "archive" ? "archive" : "actif",
+  };
+}
+
+function legacyJobToUnitCard(job: LegacyJob): UnitCard {
+  return {
+    id: job.id,
+    unit: job.unitNumber,
+    date: job.date,
+    comments: job.comments ?? "",
+    completedAt: job.status === "archive" ? new Date(`${job.date}T23:59:59.000Z`).toISOString() : undefined,
+    jobs: [
+      {
+        id: `${job.id}-1`,
+        text: job.workToDo,
+        done: job.status === "archive",
+      },
+    ],
+  };
+}
+
 export default function Home() {
   const [form, setForm] = useState<FormState>(emptyForm());
   const [activeUnits, setActiveUnits] = useState<UnitCard[]>([]);
@@ -93,6 +137,8 @@ export default function Home() {
     try {
       const savedActive = localStorage.getItem(ACTIVE_STORAGE_KEY);
       const savedHistory = localStorage.getItem(HISTORY_STORAGE_KEY);
+      const savedLegacyActive = localStorage.getItem(LEGACY_ACTIVE_STORAGE_KEY);
+      const savedLegacyHistory = localStorage.getItem(LEGACY_HISTORY_STORAGE_KEY);
 
       if (savedActive) {
         const parsed = JSON.parse(savedActive) as Partial<UnitCard>[];
@@ -105,6 +151,34 @@ export default function Home() {
         const parsed = JSON.parse(savedHistory) as Partial<UnitCard>[];
         if (Array.isArray(parsed)) {
           setHistoryUnits(parsed.map(normalizeUnitCard).filter((u): u is UnitCard => Boolean(u)));
+        }
+      }
+
+      if (!savedActive && savedLegacyActive) {
+        const parsedLegacyActive = JSON.parse(savedLegacyActive) as Partial<LegacyJob>[];
+        if (Array.isArray(parsedLegacyActive)) {
+          const migratedActive = parsedLegacyActive
+            .map(normalizeLegacyJob)
+            .filter((job): job is LegacyJob => Boolean(job))
+            .map(legacyJobToUnitCard);
+          setActiveUnits(migratedActive);
+        }
+      }
+
+      if (!savedHistory && savedLegacyHistory) {
+        const parsedLegacyHistory = JSON.parse(savedLegacyHistory) as Record<string, Partial<LegacyJob>[]>;
+        if (parsedLegacyHistory && typeof parsedLegacyHistory === "object") {
+          const migratedHistory = Object.values(parsedLegacyHistory)
+            .flatMap((jobs) => (Array.isArray(jobs) ? jobs : []))
+            .map(normalizeLegacyJob)
+            .filter((job): job is LegacyJob => Boolean(job))
+            .map(legacyJobToUnitCard)
+            .map((card) => ({
+              ...card,
+              jobs: card.jobs.map((job) => ({ ...job, done: true })),
+              completedAt: card.completedAt ?? new Date(`${card.date}T23:59:59.000Z`).toISOString(),
+            }));
+          setHistoryUnits(migratedHistory);
         }
       }
     } catch {
