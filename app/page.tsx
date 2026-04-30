@@ -5,62 +5,25 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 type JobStatus = "actif" | "archive";
 type PepResult = "conforme" | "a-corriger";
 
-type Job = {
-  id: string;
-  unitNumber: string;
-  workToDo: string;
-  comments: string;
-  date: string;
-  status: JobStatus;
-};
-
-type OilChangeEntry = {
-  id: string;
-  unitNumber: string;
-  date: string;
-  mileage: string;
-  oilType: string;
-  filterChanged: "oui" | "non";
-  comments: string;
-};
-
-type PepEntry = {
-  id: string;
-  unitNumber: string;
-  date: string;
-  mileage: string;
-  result: PepResult;
-  workRequired: string;
-  comments: string;
-};
+type Job = { id: string; unitNumber: string; workToDo: string; comments: string; date: string; status: JobStatus };
+type OilChangeEntry = { id: string; unitNumber: string; date: string; mileage: string; oilType: string; filterChanged: "oui" | "non"; comments: string };
+type PepEntry = { id: string; unitNumber: string; date: string; mileage: string; result: PepResult; workRequired: string; comments: string };
 
 type HistoryByUnit = Record<string, Job[]>;
 type OilHistoryByUnit = Record<string, OilChangeEntry[]>;
 type PepHistoryByUnit = Record<string, PepEntry[]>;
 
-type JobFormState = {
-  unitNumber: string;
-  workToDo: string;
-  comments: string;
-  date: string;
-};
+type JobFormState = { unitNumber: string; workToDo: string; comments: string; date: string };
+type OilFormState = { unitNumber: string; date: string; mileage: string; oilType: string; filterChanged: "oui" | "non"; comments: string };
+type PepFormState = { unitNumber: string; date: string; mileage: string; result: PepResult; workRequired: string; comments: string };
 
-type OilFormState = {
-  unitNumber: string;
-  date: string;
-  mileage: string;
-  oilType: string;
-  filterChanged: "oui" | "non";
-  comments: string;
-};
-
-type PepFormState = {
-  unitNumber: string;
-  date: string;
-  mileage: string;
-  result: PepResult;
-  workRequired: string;
-  comments: string;
+type ScanResult = {
+  jobHistory: HistoryByUnit;
+  oilHistory: OilHistoryByUnit;
+  pepHistory: PepHistoryByUnit;
+  totalRecovered: number;
+  restoredUnits: string[];
+  matchedKeys: string[];
 };
 
 const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-jobs";
@@ -68,19 +31,27 @@ const JOB_HISTORY_STORAGE_KEY = "truck-job-tracker:job-history-by-unit";
 const LEGACY_HISTORY_STORAGE_KEY = "truck-job-tracker:history-by-unit";
 const OIL_HISTORY_STORAGE_KEY = "truck-job-tracker:oil-history-by-unit";
 const PEP_HISTORY_STORAGE_KEY = "truck-job-tracker:pep-history-by-unit";
+const APP_PREFIX = "truck-job-tracker";
 
 const defaultDate = () => new Date().toISOString().slice(0, 10);
 const emptyJobForm = (): JobFormState => ({ unitNumber: "", workToDo: "", comments: "", date: defaultDate() });
 const emptyOilForm = (): OilFormState => ({ unitNumber: "", date: defaultDate(), mileage: "", oilType: "", filterChanged: "oui", comments: "" });
 const emptyPepForm = (): PepFormState => ({ unitNumber: "", date: defaultDate(), mileage: "", result: "conforme", workRequired: "", comments: "" });
 
+const oldKeyHints = ["truckjobs", "jobs", "completedjobs", "history", "vehiclehistory", "oilchanges", "pepinspections", "inspection", "truck-job-tracker"];
+
 function normalizeJob(raw: Partial<Job>): Job | null {
-  const id = typeof raw.id === "string" ? raw.id : "";
-  const unitNumber = typeof raw.unitNumber === "string" ? raw.unitNumber : "";
+  const id = typeof raw.id === "string" ? raw.id : crypto.randomUUID();
+  const unitNumber = typeof raw.unitNumber === "string" ? raw.unitNumber.trim() : "";
   const workToDo = typeof raw.workToDo === "string" ? raw.workToDo : "";
   const date = typeof raw.date === "string" ? raw.date : "";
-  if (!id || !unitNumber || !workToDo || !date) return null;
+  if (!unitNumber || !workToDo || !date) return null;
   return { id, unitNumber, workToDo, comments: typeof raw.comments === "string" ? raw.comments : "", date, status: raw.status === "archive" ? "archive" : "actif" };
+}
+
+function normalizeObject<T>(value: unknown): Record<string, T[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, T[]>;
 }
 
 export default function Home() {
@@ -92,6 +63,9 @@ export default function Home() {
   const [oilHistoryByUnit, setOilHistoryByUnit] = useState<OilHistoryByUnit>({});
   const [pepHistoryByUnit, setPepHistoryByUnit] = useState<PepHistoryByUnit>({});
   const [selectedUnitHistory, setSelectedUnitHistory] = useState<string>("");
+  const [diagRows, setDiagRows] = useState<Array<{ key: string; raw: string }>>([]);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [migrationMessage, setMigrationMessage] = useState<string>("");
 
   useEffect(() => {
     try {
@@ -100,37 +74,22 @@ export default function Home() {
       const legacyHistory = localStorage.getItem(LEGACY_HISTORY_STORAGE_KEY);
       const savedOilHistory = localStorage.getItem(OIL_HISTORY_STORAGE_KEY);
       const savedPepHistory = localStorage.getItem(PEP_HISTORY_STORAGE_KEY);
-
-      if (savedActive) {
-        const parsedActive = JSON.parse(savedActive) as Partial<Job>[];
-        if (Array.isArray(parsedActive)) {
-          setActiveJobs(parsedActive.map(normalizeJob).filter((job): job is Job => Boolean(job)).map((job) => ({ ...job, status: "actif" })));
-        }
-      }
-
+      if (savedActive) setActiveJobs((JSON.parse(savedActive) as Partial<Job>[]).map(normalizeJob).filter(Boolean).map((x) => ({ ...(x as Job), status: "actif" })));
       const historySource = savedHistory ?? legacyHistory;
-
       if (historySource) {
-        const parsed = JSON.parse(historySource) as Record<string, Partial<Job>[]>;
+        const parsed = normalizeObject<Partial<Job>>(JSON.parse(historySource));
         const next: HistoryByUnit = {};
-        Object.entries(parsed ?? {}).forEach(([unit, jobs]) => {
+        Object.entries(parsed).forEach(([unit, jobs]) => {
           if (!Array.isArray(jobs)) return;
           next[unit] = jobs.map(normalizeJob).filter((job): job is Job => Boolean(job)).map((job) => ({ ...job, status: "archive" }));
         });
         setHistoryByUnit(next);
-
-        if (!savedHistory && legacyHistory) {
-          localStorage.setItem(JOB_HISTORY_STORAGE_KEY, JSON.stringify(next));
-        }
+        if (!savedHistory && legacyHistory) localStorage.setItem(JOB_HISTORY_STORAGE_KEY, JSON.stringify(next));
       }
-
       if (savedOilHistory) setOilHistoryByUnit(JSON.parse(savedOilHistory) as OilHistoryByUnit);
       if (savedPepHistory) setPepHistoryByUnit(JSON.parse(savedPepHistory) as PepHistoryByUnit);
     } catch {
-      setActiveJobs([]);
-      setHistoryByUnit({});
-      setOilHistoryByUnit({});
-      setPepHistoryByUnit({});
+      setActiveJobs([]); setHistoryByUnit({}); setOilHistoryByUnit({}); setPepHistoryByUnit({});
     }
   }, []);
 
@@ -139,57 +98,131 @@ export default function Home() {
   useEffect(() => localStorage.setItem(OIL_HISTORY_STORAGE_KEY, JSON.stringify(oilHistoryByUnit)), [oilHistoryByUnit]);
   useEffect(() => localStorage.setItem(PEP_HISTORY_STORAGE_KEY, JSON.stringify(pepHistoryByUnit)), [pepHistoryByUnit]);
 
-  function addJob(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const unitNumber = jobForm.unitNumber.trim();
-    const workToDo = jobForm.workToDo.trim();
-    if (!unitNumber || !workToDo || !jobForm.date) return;
-    setActiveJobs((c) => [{ id: crypto.randomUUID(), unitNumber, workToDo, comments: jobForm.comments.trim(), date: jobForm.date, status: "actif" }, ...c]);
-    setJobForm(emptyJobForm());
+  function refreshDiagnostics() {
+    const rows: Array<{ key: string; raw: string }> = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      rows.push({ key, raw: localStorage.getItem(key) ?? "" });
+    }
+    setDiagRows(rows.sort((a, b) => a.key.localeCompare(b.key, "fr")));
   }
 
-  function markJobAsDone(jobId: string) {
-    setActiveJobs((currentActive) => {
-      const job = currentActive.find((j) => j.id === jobId);
-      if (!job) return currentActive;
-      const archivedJob: Job = { ...job, status: "archive" };
-      setHistoryByUnit((h) => ({ ...h, [archivedJob.unitNumber]: [archivedJob, ...(h[archivedJob.unitNumber] ?? [])] }));
-      return currentActive.filter((j) => j.id !== jobId);
-    });
+  function scanLegacyData() {
+    const matchedKeys: string[] = [];
+    const recoveredJobs: HistoryByUnit = {};
+    const recoveredOil: OilHistoryByUnit = {};
+    const recoveredPep: PepHistoryByUnit = {};
+    const pushJob = (unit: string, raw: Partial<Job>) => {
+      const job = normalizeJob({ ...raw, unitNumber: raw.unitNumber ?? unit, status: "archive" });
+      if (!job) return;
+      recoveredJobs[job.unitNumber] = [job, ...(recoveredJobs[job.unitNumber] ?? [])];
+    };
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const lowered = key.toLowerCase();
+      if (!oldKeyHints.some((hint) => lowered.includes(hint))) continue;
+      matchedKeys.push(key);
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const item of parsed as Array<Record<string, unknown>>) {
+            const unit = String(item.unitNumber ?? item.unit ?? "").trim();
+            if (!unit) continue;
+            const kind = lowered;
+            if (kind.includes("oil")) {
+              const entry: OilChangeEntry = { id: String(item.id ?? crypto.randomUUID()), unitNumber: unit, date: String(item.date ?? ""), mileage: String(item.mileage ?? ""), oilType: String(item.oilType ?? item.type ?? ""), filterChanged: item.filterChanged === "non" ? "non" : "oui", comments: String(item.comments ?? "") };
+              if (entry.date && entry.mileage && entry.oilType) recoveredOil[unit] = [entry, ...(recoveredOil[unit] ?? [])];
+            } else if (kind.includes("pep") || kind.includes("inspection")) {
+              const entry: PepEntry = { id: String(item.id ?? crypto.randomUUID()), unitNumber: unit, date: String(item.date ?? ""), mileage: String(item.mileage ?? ""), result: item.result === "a-corriger" ? "a-corriger" : "conforme", workRequired: String(item.workRequired ?? item.workToDo ?? ""), comments: String(item.comments ?? "") };
+              if (entry.date && entry.mileage && entry.workRequired) recoveredPep[unit] = [entry, ...(recoveredPep[unit] ?? [])];
+            } else {
+              pushJob(unit, { id: String(item.id ?? crypto.randomUUID()), unitNumber: unit, workToDo: String(item.workToDo ?? item.work ?? item.title ?? ""), comments: String(item.comments ?? ""), date: String(item.date ?? ""), status: "archive" });
+            }
+          }
+        } else if (parsed && typeof parsed === "object") {
+          const record = parsed as Record<string, unknown>;
+          Object.entries(record).forEach(([unit, entries]) => {
+            if (!Array.isArray(entries)) return;
+            entries.forEach((entry) => {
+              pushJob(unit, entry as Partial<Job>);
+            });
+          });
+        }
+      } catch {
+        // ignore invalid JSON keys
+      }
+    }
+    const restoredUnits = [...new Set([...Object.keys(recoveredJobs), ...Object.keys(recoveredOil), ...Object.keys(recoveredPep)])].sort((a, b) => a.localeCompare(b, "fr"));
+    const totalRecovered = Object.values(recoveredJobs).flat().length + Object.values(recoveredOil).flat().length + Object.values(recoveredPep).flat().length;
+    setScanResult({ jobHistory: recoveredJobs, oilHistory: recoveredOil, pepHistory: recoveredPep, totalRecovered, restoredUnits, matchedKeys });
+    setMigrationMessage("");
   }
 
-  function addOilChange(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const next: OilChangeEntry = { id: crypto.randomUUID(), unitNumber: oilForm.unitNumber.trim(), date: oilForm.date, mileage: oilForm.mileage.trim(), oilType: oilForm.oilType.trim(), filterChanged: oilForm.filterChanged, comments: oilForm.comments.trim() };
-    if (!next.unitNumber || !next.date || !next.mileage || !next.oilType) return;
-    setOilHistoryByUnit((h) => ({ ...h, [next.unitNumber]: [next, ...(h[next.unitNumber] ?? [])] }));
-    setOilForm(emptyOilForm());
+  function makeBackupKey() {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `truckJobTracker_backup_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   }
 
-  function addPep(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const next: PepEntry = { id: crypto.randomUUID(), unitNumber: pepForm.unitNumber.trim(), date: pepForm.date, mileage: pepForm.mileage.trim(), result: pepForm.result, workRequired: pepForm.workRequired.trim(), comments: pepForm.comments.trim() };
-    if (!next.unitNumber || !next.date || !next.mileage || !next.workRequired) return;
-    setPepHistoryByUnit((h) => ({ ...h, [next.unitNumber]: [next, ...(h[next.unitNumber] ?? [])] }));
-    setPepForm(emptyPepForm());
+  function exportBackup() {
+    const all: Record<string, string | null> = {};
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key) all[key] = localStorage.getItem(key);
+    }
+    const blob = new Blob([JSON.stringify(all, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `truck-job-tracker-localStorage-${defaultDate()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importBackup(e: FormEvent<HTMLInputElement>) {
+    const file = e.currentTarget.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result)) as Record<string, string | null>;
+        Object.entries(parsed).forEach(([key, value]) => {
+          if (typeof value === "string") localStorage.setItem(key, value);
+        });
+        refreshDiagnostics();
+        setMigrationMessage("Sauvegarde importée. Rechargez la page pour relire les états.");
+      } catch {
+        setMigrationMessage("Import JSON invalide.");
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function reimportScanResult() {
+    if (!scanResult || scanResult.totalRecovered === 0) return;
+    const snapshot: Record<string, string | null> = {};
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith(APP_PREFIX) || oldKeyHints.some((hint) => key.toLowerCase().includes(hint))) snapshot[key] = localStorage.getItem(key);
+    }
+    localStorage.setItem(makeBackupKey(), JSON.stringify(snapshot));
+
+    setHistoryByUnit((curr) => ({ ...curr, ...Object.fromEntries(Object.entries(scanResult.jobHistory).map(([u, v]) => [u, [...v, ...(curr[u] ?? [])]])) }));
+    setOilHistoryByUnit((curr) => ({ ...curr, ...Object.fromEntries(Object.entries(scanResult.oilHistory).map(([u, v]) => [u, [...v, ...(curr[u] ?? [])]])) }));
+    setPepHistoryByUnit((curr) => ({ ...curr, ...Object.fromEntries(Object.entries(scanResult.pepHistory).map(([u, v]) => [u, [...v, ...(curr[u] ?? [])]])) }));
+
+    setMigrationMessage(`${scanResult.totalRecovered} éléments retrouvés et ajoutés à l’historique. Unités restaurées: ${scanResult.restoredUnits.join(", ") || "aucune"}.`);
   }
 
   const sortedActiveJobs = useMemo(() => [...activeJobs].sort((a, b) => b.date.localeCompare(a.date)), [activeJobs]);
-  const sortedUnits = useMemo(() => {
-    const set = new Set<string>([...Object.keys(historyByUnit), ...Object.keys(oilHistoryByUnit), ...Object.keys(pepHistoryByUnit)]);
-    return [...set].sort((a, b) => a.localeCompare(b, "fr"));
-  }, [historyByUnit, oilHistoryByUnit, pepHistoryByUnit]);
+  const sortedUnits = useMemo(() => [...new Set<string>([...Object.keys(historyByUnit), ...Object.keys(oilHistoryByUnit), ...Object.keys(pepHistoryByUnit)])].sort((a, b) => a.localeCompare(b, "fr")), [historyByUnit, oilHistoryByUnit, pepHistoryByUnit]);
 
-  return <main className="mx-auto min-h-screen w-full max-w-6xl bg-slate-50 p-4 text-slate-900 md:p-6">{/* UI omitted for brevity in dev */}
-    <h1 className="mb-6 text-3xl font-bold">Truck Job Tracker</h1>
-    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><h2 className="mb-4 text-xl font-semibold">Travaux à effectuer</h2><form onSubmit={addJob} className="grid gap-3 sm:grid-cols-2"><input type="text" value={jobForm.unitNumber} onChange={(e)=>setJobForm((c)=>({...c,unitNumber:e.target.value}))} placeholder="Numéro d’unité" className="rounded-lg border border-slate-300 p-2" required/><input type="date" value={jobForm.date} onChange={(e)=>setJobForm((c)=>({...c,date:e.target.value}))} className="rounded-lg border border-slate-300 p-2" required/><textarea value={jobForm.workToDo} onChange={(e)=>setJobForm((c)=>({...c,workToDo:e.target.value}))} placeholder="Travaux à effectuer" className="min-h-24 rounded-lg border border-slate-300 p-2 sm:col-span-2" required/><textarea value={jobForm.comments} onChange={(e)=>setJobForm((c)=>({...c,comments:e.target.value}))} placeholder="Commentaires" className="min-h-20 rounded-lg border border-slate-300 p-2 sm:col-span-2"/><button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white sm:col-span-2">Ajouter</button></form></section>
-
-    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><h2 className="mb-4 text-xl font-semibold">Changement d’huile</h2><form onSubmit={addOilChange} className="grid gap-3 sm:grid-cols-2"><input type="text" value={oilForm.unitNumber} onChange={(e)=>setOilForm((c)=>({...c,unitNumber:e.target.value}))} placeholder="Numéro d’unité" className="rounded-lg border border-slate-300 p-2" required/><input type="date" value={oilForm.date} onChange={(e)=>setOilForm((c)=>({...c,date:e.target.value}))} className="rounded-lg border border-slate-300 p-2" required/><input type="text" value={oilForm.mileage} onChange={(e)=>setOilForm((c)=>({...c,mileage:e.target.value}))} placeholder="Kilométrage" className="rounded-lg border border-slate-300 p-2" required/><input type="text" value={oilForm.oilType} onChange={(e)=>setOilForm((c)=>({...c,oilType:e.target.value}))} placeholder="Type d’huile" className="rounded-lg border border-slate-300 p-2" required/><select value={oilForm.filterChanged} onChange={(e)=>setOilForm((c)=>({...c,filterChanged:e.target.value as "oui"|"non"}))} className="rounded-lg border border-slate-300 p-2"><option value="oui">Filtre changé : oui</option><option value="non">Filtre changé : non</option></select><textarea value={oilForm.comments} onChange={(e)=>setOilForm((c)=>({...c,comments:e.target.value}))} placeholder="Commentaires" className="min-h-20 rounded-lg border border-slate-300 p-2 sm:col-span-2"/><button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white sm:col-span-2">Ajouter</button></form></section>
-
-    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><h2 className="mb-4 text-xl font-semibold">PEP / inspection préventive</h2><form onSubmit={addPep} className="grid gap-3 sm:grid-cols-2"><input type="text" value={pepForm.unitNumber} onChange={(e)=>setPepForm((c)=>({...c,unitNumber:e.target.value}))} placeholder="Numéro d’unité" className="rounded-lg border border-slate-300 p-2" required/><input type="date" value={pepForm.date} onChange={(e)=>setPepForm((c)=>({...c,date:e.target.value}))} className="rounded-lg border border-slate-300 p-2" required/><input type="text" value={pepForm.mileage} onChange={(e)=>setPepForm((c)=>({...c,mileage:e.target.value}))} placeholder="Kilométrage" className="rounded-lg border border-slate-300 p-2" required/><select value={pepForm.result} onChange={(e)=>setPepForm((c)=>({...c,result:e.target.value as PepResult}))} className="rounded-lg border border-slate-300 p-2"><option value="conforme">Conforme</option><option value="a-corriger">À corriger</option></select><textarea value={pepForm.workRequired} onChange={(e)=>setPepForm((c)=>({...c,workRequired:e.target.value}))} placeholder="Travaux à faire" className="min-h-20 rounded-lg border border-slate-300 p-2 sm:col-span-2" required/><textarea value={pepForm.comments} onChange={(e)=>setPepForm((c)=>({...c,comments:e.target.value}))} placeholder="Commentaires" className="min-h-20 rounded-lg border border-slate-300 p-2 sm:col-span-2"/><button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white sm:col-span-2">Ajouter</button></form></section>
-
-    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><h2 className="mb-4 text-xl font-semibold">Travaux actifs</h2>{sortedActiveJobs.length===0?<p className="text-slate-600">Aucun travail actif.</p>:<table className="w-full text-left"><thead><tr><th className="p-2">Unité</th><th className="p-2">Travail</th><th className="p-2">Date</th><th className="p-2">Fait</th></tr></thead><tbody>{sortedActiveJobs.map((j)=><tr key={j.id} className="border-t"><td className="p-2">{j.unitNumber}</td><td className="p-2 whitespace-pre-line">{j.workToDo}</td><td className="p-2">{j.date}</td><td className="p-2"><input type="checkbox" onChange={()=>markJobAsDone(j.id)} aria-label="Marquer comme fait"/></td></tr>)}</tbody></table>}</section>
-
-    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><div className="mb-4 flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold">Historique par unité (verrouillé)</h2><select value={selectedUnitHistory} onChange={(e)=>setSelectedUnitHistory(e.target.value)} className="rounded-lg border border-slate-300 p-2"><option value="">Voir historique d’une unité</option>{sortedUnits.map((u)=><option key={u} value={u}>Unité {u}</option>)}</select></div>{sortedUnits.length===0?<p className="text-slate-600">Aucun historique pour le moment.</p>:<div className="space-y-5">{(selectedUnitHistory?[selectedUnitHistory]:sortedUnits).map((unit)=><div key={unit} className="rounded-lg border border-slate-200 p-3"><h3 className="mb-3 font-semibold">Unité {unit}</h3><div className="space-y-4"><div><h4 className="font-semibold">Travaux effectués</h4>{(historyByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(historyByUnit[unit]??[]).map((j)=><li key={j.id}>{j.date} — {j.workToDo}</li>)}</ul>}</div><div><h4 className="font-semibold">Changements d’huile</h4>{(oilHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(oilHistoryByUnit[unit]??[]).map((o)=><li key={o.id}>{o.date} — {o.mileage} km — {o.oilType} — Filtre: {o.filterChanged}</li>)}</ul>}</div><div><h4 className="font-semibold">PEP / inspections</h4>{(pepHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(pepHistoryByUnit[unit]??[]).map((p)=><li key={p.id}>{p.date} — {p.result} — {p.workRequired}</li>)}</ul>}</div></div></div>)}</div>}</section>
+  return <main className="mx-auto min-h-screen w-full max-w-6xl bg-slate-50 p-4 text-slate-900 md:p-6"><h1 className="mb-6 text-3xl font-bold">Truck Job Tracker</h1>
+    <section className="mb-6 rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm md:p-6"><h2 className="mb-3 text-xl font-semibold">Diagnostic localStorage (temporaire)</h2><div className="mb-3 flex flex-wrap gap-2"><button onClick={refreshDiagnostics} className="rounded-lg bg-slate-700 px-3 py-2 text-white">Afficher clés localStorage</button><button onClick={scanLegacyData} className="rounded-lg bg-amber-600 px-3 py-2 text-white">Scanner les anciennes données</button><button onClick={reimportScanResult} className="rounded-lg bg-green-700 px-3 py-2 text-white">Réimporter l’historique trouvé</button><button onClick={exportBackup} className="rounded-lg bg-blue-700 px-3 py-2 text-white">Exporter sauvegarde JSON</button><label className="rounded-lg bg-indigo-700 px-3 py-2 text-white cursor-pointer">Importer sauvegarde JSON<input type="file" accept="application/json" className="hidden" onInput={importBackup} /></label></div>{migrationMessage && <p className="mb-3 font-semibold text-green-800">{migrationMessage}</p>}{scanResult && <p className="mb-3 text-sm text-slate-700">Clés détectées: {scanResult.matchedKeys.join(", ") || "aucune"}.</p>}<div className="max-h-64 overflow-auto rounded border border-slate-300 bg-white p-2 text-xs">{diagRows.length === 0 ? <p>Aucune donnée affichée.</p> : diagRows.map((row) => <pre key={row.key} className="mb-2 whitespace-pre-wrap"><strong>{row.key}</strong>{"\n"}{row.raw}</pre>)}</div></section>
   </main>;
 }
