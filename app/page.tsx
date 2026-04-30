@@ -65,6 +65,7 @@ type PepFormState = {
 
 const ACTIVE_STORAGE_KEY = "truck-job-tracker:active-jobs";
 const JOB_HISTORY_STORAGE_KEY = "truck-job-tracker:job-history-by-unit";
+const LEGACY_HISTORY_STORAGE_KEY = "truck-job-tracker:history-by-unit";
 const OIL_HISTORY_STORAGE_KEY = "truck-job-tracker:oil-history-by-unit";
 const PEP_HISTORY_STORAGE_KEY = "truck-job-tracker:pep-history-by-unit";
 
@@ -96,6 +97,7 @@ export default function Home() {
     try {
       const savedActive = localStorage.getItem(ACTIVE_STORAGE_KEY);
       const savedHistory = localStorage.getItem(JOB_HISTORY_STORAGE_KEY);
+      const legacyHistory = localStorage.getItem(LEGACY_HISTORY_STORAGE_KEY);
       const savedOilHistory = localStorage.getItem(OIL_HISTORY_STORAGE_KEY);
       const savedPepHistory = localStorage.getItem(PEP_HISTORY_STORAGE_KEY);
 
@@ -106,14 +108,20 @@ export default function Home() {
         }
       }
 
-      if (savedHistory) {
-        const parsed = JSON.parse(savedHistory) as Record<string, Partial<Job>[]>;
+      const historySource = savedHistory ?? legacyHistory;
+
+      if (historySource) {
+        const parsed = JSON.parse(historySource) as Record<string, Partial<Job>[]>;
         const next: HistoryByUnit = {};
         Object.entries(parsed ?? {}).forEach(([unit, jobs]) => {
           if (!Array.isArray(jobs)) return;
           next[unit] = jobs.map(normalizeJob).filter((job): job is Job => Boolean(job)).map((job) => ({ ...job, status: "archive" }));
         });
         setHistoryByUnit(next);
+
+        if (!savedHistory && legacyHistory) {
+          localStorage.setItem(JOB_HISTORY_STORAGE_KEY, JSON.stringify(next));
+        }
       }
 
       if (savedOilHistory) setOilHistoryByUnit(JSON.parse(savedOilHistory) as OilHistoryByUnit);
