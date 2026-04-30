@@ -74,6 +74,21 @@ const emptyJobForm = (): JobFormState => ({ unitNumber: "", workToDo: "", commen
 const emptyOilForm = (): OilFormState => ({ unitNumber: "", date: defaultDate(), mileage: "", oilType: "", filterChanged: "oui", comments: "" });
 const emptyPepForm = (): PepFormState => ({ unitNumber: "", date: defaultDate(), mileage: "", result: "conforme", workRequired: "", comments: "" });
 
+
+const createUniqueId = () => `${Date.now()}-${Math.random()}`;
+
+function dedupeJobsById(jobs: Job[]): Job[] {
+  return jobs.filter((job, index, self) => index === self.findIndex((j) => j.id === job.id));
+}
+
+function dedupeHistoryByUnit(history: HistoryByUnit): HistoryByUnit {
+  const next: HistoryByUnit = {};
+  Object.entries(history).forEach(([unit, jobs]) => {
+    next[unit] = dedupeJobsById(jobs);
+  });
+  return next;
+}
+
 function normalizeJob(raw: Partial<Job>): Job | null {
   const id = typeof raw.id === "string" ? raw.id : "";
   const unitNumber = typeof raw.unitNumber === "string" ? raw.unitNumber : "";
@@ -117,11 +132,10 @@ export default function Home() {
           if (!Array.isArray(jobs)) return;
           next[unit] = jobs.map(normalizeJob).filter((job): job is Job => Boolean(job)).map((job) => ({ ...job, status: "archive" }));
         });
-        setHistoryByUnit(next);
+        const cleanedHistory = dedupeHistoryByUnit(next);
+        setHistoryByUnit(cleanedHistory);
+        localStorage.setItem(JOB_HISTORY_STORAGE_KEY, JSON.stringify(cleanedHistory));
 
-        if (!savedHistory && legacyHistory) {
-          localStorage.setItem(JOB_HISTORY_STORAGE_KEY, JSON.stringify(next));
-        }
       }
 
       if (savedOilHistory) setOilHistoryByUnit(JSON.parse(savedOilHistory) as OilHistoryByUnit);
@@ -144,16 +158,28 @@ export default function Home() {
     const unitNumber = jobForm.unitNumber.trim();
     const workToDo = jobForm.workToDo.trim();
     if (!unitNumber || !workToDo || !jobForm.date) return;
-    setActiveJobs((c) => [{ id: crypto.randomUUID(), unitNumber, workToDo, comments: jobForm.comments.trim(), date: jobForm.date, status: "actif" }, ...c]);
+    setActiveJobs((c) => [{ id: createUniqueId(), unitNumber, workToDo, comments: jobForm.comments.trim(), date: jobForm.date, status: "actif" }, ...c]);
     setJobForm(emptyJobForm());
   }
 
   function markJobAsDone(jobId: string) {
+    console.log("[markJobAsDone] called for job", jobId);
     setActiveJobs((currentActive) => {
       const job = currentActive.find((j) => j.id === jobId);
       if (!job) return currentActive;
+
       const archivedJob: Job = { ...job, status: "archive" };
-      setHistoryByUnit((h) => ({ ...h, [archivedJob.unitNumber]: [archivedJob, ...(h[archivedJob.unitNumber] ?? [])] }));
+      setHistoryByUnit((h) => {
+        const unitHistory = h[archivedJob.unitNumber] ?? [];
+        const alreadyExists = unitHistory.some((entry) => entry.id === archivedJob.id);
+        if (alreadyExists) {
+          console.log("[markJobAsDone] duplicate blocked for job", archivedJob.id);
+          return h;
+        }
+
+        return { ...h, [archivedJob.unitNumber]: [archivedJob, ...unitHistory] };
+      });
+
       return currentActive.filter((j) => j.id !== jobId);
     });
   }
@@ -190,6 +216,6 @@ export default function Home() {
 
     <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><h2 className="mb-4 text-xl font-semibold">Travaux actifs</h2>{sortedActiveJobs.length===0?<p className="text-slate-600">Aucun travail actif.</p>:<table className="w-full text-left"><thead><tr><th className="p-2">Unité</th><th className="p-2">Travail</th><th className="p-2">Date</th><th className="p-2">Fait</th></tr></thead><tbody>{sortedActiveJobs.map((j)=><tr key={j.id} className="border-t"><td className="p-2">{j.unitNumber}</td><td className="p-2 whitespace-pre-line">{j.workToDo}</td><td className="p-2">{j.date}</td><td className="p-2"><input type="checkbox" onChange={()=>markJobAsDone(j.id)} aria-label="Marquer comme fait"/></td></tr>)}</tbody></table>}</section>
 
-    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><div className="mb-4 flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold">Historique par unité (verrouillé)</h2><select value={selectedUnitHistory} onChange={(e)=>setSelectedUnitHistory(e.target.value)} className="rounded-lg border border-slate-300 p-2"><option value="">Voir historique d’une unité</option>{sortedUnits.map((u)=><option key={u} value={u}>Unité {u}</option>)}</select></div>{sortedUnits.length===0?<p className="text-slate-600">Aucun historique pour le moment.</p>:<div className="space-y-5">{(selectedUnitHistory?[selectedUnitHistory]:sortedUnits).map((unit)=><div key={unit} className="rounded-lg border border-slate-200 p-3"><h3 className="mb-3 font-semibold">Unité {unit}</h3><div className="space-y-4"><div><h4 className="font-semibold">Travaux effectués</h4>{(historyByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(historyByUnit[unit]??[]).map((j)=><li key={j.id}>{j.date} — {j.workToDo}</li>)}</ul>}</div><div><h4 className="font-semibold">Changements d’huile</h4>{(oilHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(oilHistoryByUnit[unit]??[]).map((o)=><li key={o.id}>{o.date} — {o.mileage} km — {o.oilType} — Filtre: {o.filterChanged}</li>)}</ul>}</div><div><h4 className="font-semibold">PEP / inspections</h4>{(pepHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(pepHistoryByUnit[unit]??[]).map((p)=><li key={p.id}>{p.date} — {p.result} — {p.workRequired}</li>)}</ul>}</div></div></div>)}</div>}</section>
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm md:p-6"><div className="mb-4 flex flex-wrap items-center gap-2"><h2 className="text-xl font-semibold">Historique par unité (verrouillé)</h2><select value={selectedUnitHistory} onChange={(e)=>setSelectedUnitHistory(e.target.value)} className="rounded-lg border border-slate-300 p-2"><option value="">Voir historique d’une unité</option>{sortedUnits.map((u)=><option key={u} value={u}>Unité {u}</option>)}</select><button type="button" onClick={()=>setHistoryByUnit((h)=>dedupeHistoryByUnit(h))} className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">Nettoyer les doublons</button></div>{sortedUnits.length===0?<p className="text-slate-600">Aucun historique pour le moment.</p>:<div className="space-y-5">{(selectedUnitHistory?[selectedUnitHistory]:sortedUnits).map((unit)=><div key={unit} className="rounded-lg border border-slate-200 p-3"><h3 className="mb-3 font-semibold">Unité {unit}</h3><div className="space-y-4"><div><h4 className="font-semibold">Travaux effectués</h4>{(historyByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(historyByUnit[unit]??[]).map((j)=><li key={j.id}>{j.date} — {j.workToDo}</li>)}</ul>}</div><div><h4 className="font-semibold">Changements d’huile</h4>{(oilHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(oilHistoryByUnit[unit]??[]).map((o)=><li key={o.id}>{o.date} — {o.mileage} km — {o.oilType} — Filtre: {o.filterChanged}</li>)}</ul>}</div><div><h4 className="font-semibold">PEP / inspections</h4>{(pepHistoryByUnit[unit]??[]).length===0?<p className="text-sm text-slate-600">Aucune entrée.</p>:<ul className="list-disc pl-6">{(pepHistoryByUnit[unit]??[]).map((p)=><li key={p.id}>{p.date} — {p.result} — {p.workRequired}</li>)}</ul>}</div></div></div>)}</div>}</section>
   </main>;
 }
